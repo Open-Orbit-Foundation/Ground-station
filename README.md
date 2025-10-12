@@ -40,35 +40,6 @@ Start the backend to receive and log data:
 python data_receiver.py
 ```
 
-The receiver expects sensor data in CSV format:
-```
-roll,pitch,yaw,latitude,longitude,altitude,velocity,temperature,pressure
-```
-
-Example: `45.2,12.5,180.0,34.052235,-118.243683,15000.0,5.5,25.3,1013.25`
-
-Data is logged to `telemetry_data.csv` with automatic validation.
-
-### Receiving with RTL-SDR (Windows)
-
-You can replace the proprietary SX126x/UART module by using an RTL-SDR and an external LoRa demodulator that outputs decoded payloads over UDP.
-
-1. Install an RTL-SDR driver and a LoRa demodulator tool that can output ASCII payloads via UDP. Example stacks include SDRSharp/SDR++ feeding gr-lora or a standalone Windows demodulator that emits UDP lines.
-2. Start your demodulator to send decoded lines like `roll,pitch,yaw,lat,lon,alt,vel,temp,pressure` to a UDP port, e.g., 16886.
-3. Run the receiver in UDP mode:
-```bash
-python data_receiver.py --udp --udp-host 0.0.0.0 --udp-port 16886
-```
-
-Quick print-only monitor without CSV logging:
-```bash
-python CLI_Test.py --udp --udp-host 0.0.0.0 --udp-port 16886
-```
-
-Notes:
-- Ensure the demodulator outputs one payload per UDP datagram as a UTF-8 string.
-- The expected format is identical to the serial path: `roll,pitch,yaw,lat,lon,alt,vel,temp,pressure`.
-
 ### Running the UI
 
 #### Normal Mode (with Pre-Flight Configuration)
