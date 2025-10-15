@@ -61,37 +61,33 @@ def main():
     
     t = 0
     
-    try:
-        while True:
-            # Generate data
-            data = generate_telemetry(t)
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Write to CSV
-            with open(CSV_FILE, 'a', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    timestamp,
-                    data['roll'],
-                    data['pitch'],
-                    data['yaw'],
-                    data['latitude'],
-                    data['longitude'],
-                    data['altitude'],
-                    data['velocity'],
-                    data['temperature'],
-                    data['pressure']
-                ])
-            
-            # Display
-            print(f"[{timestamp}] Alt: {data['altitude']:.1f}m | "
-                  f"GPS: {data['latitude']:.4f}, {data['longitude']:.4f}")
-            
-            t += 1
-            time.sleep(1)  # Update every second
-    
-    except KeyboardInterrupt:
-        print("\n\nStopped data generation")
+    while True:
+        # Generate data
+        data = generate_telemetry(t)
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Write to CSV
+        with open(CSV_FILE, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                timestamp,
+                data['roll'],
+                data['pitch'],
+                data['yaw'],
+                data['latitude'],
+                data['longitude'],
+                data['altitude'],
+                data['velocity'],
+                data['temperature'],
+                data['pressure']
+            ])
+        
+        # Display
+        print(f"[{timestamp}] Alt: {data['altitude']:.1f}m | "
+              f"GPS: {data['latitude']:.4f}, {data['longitude']:.4f}")
+        
+        t += 1
+        time.sleep(1)  # Update every second
 
 if __name__ == "__main__":
     main()

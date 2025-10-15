@@ -21,8 +21,7 @@ TELEMETRY_DIR = 'Telemetry'
 
 
 # CSV Headers
-CSV_HEADERS = ['timestamp', 'roll', 'pitch', 'yaw', 'latitude', 'longitude', 
-               'altitude', 'velocity', 'temperature', 'pressure']
+CSV_HEADERS = ['timestamp', 'latitude', 'longitude', 'altitude', 'velocity']
 
 
 def initialize_csv(csv_path):
@@ -42,25 +41,20 @@ def validate_data(data_dict):
     """
     try:
         # Check all required fields are present
-        required_fields = ['roll', 'pitch', 'yaw', 'latitude', 'longitude', 
-                          'altitude', 'velocity', 'temperature', 'pressure']
+        required_fields = ['latitude', 'longitude', 'altitude', 'velocity']
         
         for field in required_fields:
             if field not in data_dict:
                 return False
         
         # Validate numeric ranges
-        if not (-180 <= float(data_dict['roll']) <= 180):
-            return False
-        if not (-90 <= float(data_dict['pitch']) <= 90):
-            return False
-        if not (-180 <= float(data_dict['yaw']) <= 180):
-            return False
         if not (-90 <= float(data_dict['latitude']) <= 90):
             return False
         if not (-180 <= float(data_dict['longitude']) <= 180):
             return False
         if not (-1000 <= float(data_dict['altitude']) <= 50000):
+            return False
+        if not (0 <= float(data_dict['velocity']) <= 1000):
             return False
         
         return True
@@ -74,43 +68,48 @@ def parse_sensor_data(raw_text):
     Parse HAART GPS payload: "GPGGA,...;GPRMC,..." only.
     Returns a complete dict with missing values defaulted to 0.
     """
-    try:
-        text = raw_text.strip()
-        haart = parse_haart_payload(text)
-        return haart
-    except Exception as e:
-        print(f"Parse error: {e}")
-        return None
+    text = raw_text.strip()
+    haart = parse_haart_payload(text)
+    return haart
 
 
 def nmea_degmin_to_decimal(value_str, deg_len):
     """
     Convert NMEA degrees+minutes (ddmm.mmmm or dddmm.mmmm) to decimal degrees.
-    Expects value_str without hemisphere. Returns float or None.
+    If a trailing hemisphere letter is present (N/S/E/W), apply the sign.
+    Returns float or None.
     deg_len: 2 for latitude, 3 for longitude.
     """
-    try:
-        if value_str is None:
-            return None
-        s = value_str.strip()
-        if s == '':
-            return None
-        # Remove any non-numeric except dot
-        s = ''.join(ch for ch in s if ch.isdigit() or ch == '.')
-        if s == '' or '.' not in s or len(s) <= deg_len:
-            return None
-        degrees = int(s[:deg_len])
-        minutes = float(s[deg_len:])
-        return degrees + minutes / 60.0
-    except Exception:
+    if value_str is None:
         return None
+    s = value_str.strip()
+    if s == '':
+        return None
+
+    # Detect optional hemisphere suffix
+    hemi = None
+    last = s[-1].upper()
+    if last in ('N', 'S', 'E', 'W'):
+        hemi = last
+        s = s[:-1]
+
+    # Keep only digits and decimal point for the numeric portion
+    s = ''.join(ch for ch in s if ch.isdigit() or ch == '.')
+    if s == '' or '.' not in s or len(s) <= deg_len:
+        return None
+
+    degrees = int(s[:deg_len])
+    minutes = float(s[deg_len:])
+    dec = degrees + minutes / 60.0
+
+    if hemi in ('S', 'W'):
+        dec = -dec
+
+    return dec
 
 
 def knots_to_mps(knots):
-    try:
-        return float(knots) * 0.514444
-    except Exception:
-        return 0.0
+    return float(knots) * 0.514444
 
 
 def fill_defaults(data_dict):
@@ -118,7 +117,7 @@ def fill_defaults(data_dict):
     Ensure all required fields exist; default missing ones to 0.
     Returns a dict of strings to keep CSV consistent.
     """
-    fields = ['roll', 'pitch', 'yaw', 'latitude', 'longitude', 'altitude', 'velocity', 'temperature', 'pressure']
+    fields = ['latitude', 'longitude', 'altitude', 'velocity']
     out = {}
     for f in fields:
         val = data_dict.get(f, 0)
@@ -134,84 +133,75 @@ def parse_haart_payload(text):
     Looks for "GPGGA,...;GPRMC,..." and extracts lat/lon/alt/speed.
     Returns a full data dict with defaults, or None if pattern absent.
     """
-    try:
-        if 'GPGGA,' not in text or 'GPRMC,' not in text:
-            return None
-
-        # Narrow to the GPGGA..GPRMC region
-        gga_idx = text.find('GPGGA,')
-        sub = text[gga_idx:]
-        # Split gga and rmc on the first ';'
-        if ';' in sub:
-            gga_part, rest = sub.split(';', 1)
-        else:
-            # If no separator, try to find GPRMC start directly
-            rmc_start = sub.find('GPRMC,')
-            if rmc_start == -1:
-                return None
-            gga_part = sub[:rmc_start]
-            rest = sub[rmc_start:]
-
-        # Ensure RMC part begins correctly
-        rmc_idx = rest.find('GPRMC,')
-        if rmc_idx == -1:
-            return None
-        rmc_part = rest[rmc_idx:]
-
-        # Clean trailing control chars
-        gga_part = ''.join(ch for ch in gga_part if ch >= ' ')
-        rmc_part = ''.join(ch for ch in rmc_part if ch >= ' ')
-
-        # Remove headers
-        if gga_part.startswith('GPGGA,'):
-            gga_fields = gga_part[len('GPGGA,'):].split(',')
-        else:
-            gga_fields = []
-        if rmc_part.startswith('GPRMC,'):
-            rmc_fields = rmc_part[len('GPRMC,'):].split(',')
-        else:
-            rmc_fields = []
-
-        # Expected minimal lengths per sender's __str__
-        # GGA: time, lat, long, pos_fix, msl
-        # RMC: time, status, lat, long, gnd_spd, gnd_course
-        gga_lat = gga_fields[1] if len(gga_fields) >= 2 else ''
-        gga_lon = gga_fields[2] if len(gga_fields) >= 3 else ''
-        gga_msl = gga_fields[4] if len(gga_fields) >= 5 else ''
-
-        rmc_lat = rmc_fields[2] if len(rmc_fields) >= 3 else ''
-        rmc_lon = rmc_fields[3] if len(rmc_fields) >= 4 else ''
-        rmc_spd = rmc_fields[4] if len(rmc_fields) >= 5 else ''
-
-        # Prefer RMC lat/lon if present, else GGA
-        lat_src = rmc_lat if rmc_lat not in (None, '') else gga_lat
-        lon_src = rmc_lon if rmc_lon not in (None, '') else gga_lon
-
-        lat_dd = nmea_degmin_to_decimal(lat_src, 2)
-        lon_dd = nmea_degmin_to_decimal(lon_src, 3)
-        alt_m = None
-        try:
-            alt_m = float(gga_msl) if gga_msl not in (None, '') else None
-        except Exception:
-            alt_m = None
-
-        vel_ms = knots_to_mps(rmc_spd) if rmc_spd not in (None, '') else 0.0
-
-        data = {
-            'roll': 0,
-            'pitch': 0,
-            'yaw': 0,
-            'latitude': lat_dd if lat_dd is not None else 0,
-            'longitude': lon_dd if lon_dd is not None else 0,
-            'altitude': alt_m if alt_m is not None else 0,
-            'velocity': vel_ms,
-            'temperature': 0,
-            'pressure': 0
-        }
-
-        return fill_defaults(data)
-    except Exception:
+    if 'GPGGA,' not in text or 'GPRMC,' not in text:
         return None
+
+    # Narrow to the GPGGA..GPRMC region
+    gga_idx = text.find('GPGGA,')
+    sub = text[gga_idx:]
+    # Split gga and rmc on the first ';'
+    if ';' in sub:
+        gga_part, rest = sub.split(';', 1)
+    else:
+        # If no separator, try to find GPRMC start directly
+        rmc_start = sub.find('GPRMC,')
+        if rmc_start == -1:
+            return None
+        gga_part = sub[:rmc_start]
+        rest = sub[rmc_start:]
+
+    # Ensure RMC part begins correctly
+    rmc_idx = rest.find('GPRMC,')
+    if rmc_idx == -1:
+        return None
+    rmc_part = rest[rmc_idx:]
+
+    # Clean trailing control chars
+    gga_part = ''.join(ch for ch in gga_part if ch >= ' ')
+    rmc_part = ''.join(ch for ch in rmc_part if ch >= ' ')
+
+    # Remove headers
+    if gga_part.startswith('GPGGA,'):
+        gga_fields = gga_part[len('GPGGA,'):].split(',')
+    else:
+        gga_fields = []
+    if rmc_part.startswith('GPRMC,'):
+        rmc_fields = rmc_part[len('GPRMC,'):].split(',')
+    else:
+        rmc_fields = []
+
+    # Expected minimal lengths per sender's __str__
+    # GGA: time, lat, long, pos_fix, msl
+    # RMC: time, status, lat, long, gnd_spd, gnd_course
+    gga_lat = gga_fields[1] if len(gga_fields) >= 2 else ''
+    gga_lon = gga_fields[2] if len(gga_fields) >= 3 else ''
+    gga_msl = gga_fields[4] if len(gga_fields) >= 5 else ''
+
+    rmc_lat = rmc_fields[2] if len(rmc_fields) >= 3 else ''
+    rmc_lon = rmc_fields[3] if len(rmc_fields) >= 4 else ''
+    rmc_spd = rmc_fields[4] if len(rmc_fields) >= 5 else ''
+
+    # Prefer RMC lat/lon if present, else GGA
+    lat_src = rmc_lat if rmc_lat not in (None, '') else gga_lat
+    lon_src = rmc_lon if rmc_lon not in (None, '') else gga_lon
+
+    lat_dd = nmea_degmin_to_decimal(lat_src, 2)
+    lon_dd = nmea_degmin_to_decimal(lon_src, 3)
+    # Apply negative sign for western hemisphere longitude
+    if lon_dd is not None and lon_dd > 0:
+        lon_dd = -lon_dd
+    alt_m = float(gga_msl) if gga_msl not in (None, '') else None
+
+    vel_ms = knots_to_mps(rmc_spd) if rmc_spd not in (None, '') else 0.0
+
+    data = {
+        'latitude': lat_dd if lat_dd is not None else 0,
+        'longitude': lon_dd if lon_dd is not None else 0,
+        'altitude': alt_m if alt_m is not None else 0,
+        'velocity': vel_ms
+    }
+
+    return fill_defaults(data)
 
 
 class StreamAssembler:
@@ -303,15 +293,10 @@ def write_to_csv(data_dict, csv_path):
         writer = csv.writer(f)
         writer.writerow([
             timestamp,
-            data_dict['roll'],
-            data_dict['pitch'],
-            data_dict['yaw'],
             data_dict['latitude'],
             data_dict['longitude'],
             data_dict['altitude'],
-            data_dict['velocity'],
-            data_dict['temperature'],
-            data_dict['pressure']
+            data_dict['velocity']
         ])
 
 
@@ -330,72 +315,54 @@ def main():
     csv_path = os.path.join(TELEMETRY_DIR, f"{session_ts}.csv")
     initialize_csv(csv_path)
     
-    try:
-        packet_count = 0
-        error_count = 0
+    packet_count = 0
+    error_count = 0
 
-        assembler = StreamAssembler()
+    assembler = StreamAssembler()
 
-        # Serial receive path (E22/SX126x UART bridge)
-        print(f"Connecting to E22900t22s module on {args.serial_port}...")
-        ser = serial.Serial(
-            port=args.serial_port,
-            baudrate=args.baud,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=TIMEOUT
-        )
+    # Serial receive path (E22/SX126x UART bridge)
+    print(f"Connecting to E22900t22s module on {args.serial_port}...")
+    ser = serial.Serial(
+        port=args.serial_port,
+        baudrate=args.baud,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        timeout=TIMEOUT
+    )
 
-        print(f"Connected! Listening at {args.baud} baud...")
-        print(f"Logging to: {csv_path}")
-        print("-" * 60)
+    print(f"Connected! Listening at {args.baud} baud...")
+    print(f"Logging to: {csv_path}")
+    print("-" * 60)
 
-        while True:
-            if ser.in_waiting > 0:
-                raw_chunk = ser.read(ser.in_waiting)
-                assembler.append(raw_chunk)
-                frames = assembler.extract_frames()
-                for frame in frames:
-                    data_dict = parse_sensor_data(frame)
-                    if data_dict is None:
-                        error_count += 1
-                        print(f"[ERROR] Failed to parse data: {frame[:80]}...")
-                        continue
+    while True:
+        if ser.in_waiting > 0:
+            raw_chunk = ser.read(ser.in_waiting)
+            assembler.append(raw_chunk)
+            frames = assembler.extract_frames()
+            for frame in frames:
+                data_dict = parse_sensor_data(frame)
+                if data_dict is None:
+                    error_count += 1
+                    print(f"[ERROR] Failed to parse data: {frame[:80]}...")
+                    continue
 
-                    if not validate_data(data_dict):
-                        error_count += 1
-                        print(f"[ERROR] Invalid data values: {data_dict}")
-                        continue
+                if not validate_data(data_dict):
+                    error_count += 1
+                    print(f"[ERROR] Invalid data values: {data_dict}")
+                    continue
 
-                    write_to_csv(data_dict, csv_path)
-                    packet_count += 1
+                write_to_csv(data_dict, csv_path)
+                packet_count += 1
 
-                    timestamp = datetime.now().strftime('%H:%M:%S')
-                    print(f"[{timestamp}] Packet #{packet_count} - LOGGED")
-                    print(f"  Orientation: R={data_dict['roll']}° P={data_dict['pitch']}° Y={data_dict['yaw']}°")
-                    print(f"  GPS: {data_dict['latitude']}, {data_dict['longitude']} @ {data_dict['altitude']}m")
-                    print(f"  Velocity: {data_dict['velocity']} m/s | Temp: {data_dict['temperature']}°C | Press: {data_dict['pressure']} hPa")
-                    print(f"  Stats: {packet_count} logged, {error_count} errors")
-                    print("-" * 60)
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                print(f"[{timestamp}] Packet #{packet_count} - LOGGED")
+                print(f"  GPS: {data_dict['latitude']}, {data_dict['longitude']} @ {data_dict['altitude']}m")
+                print(f"  Velocity: {data_dict['velocity']} m/s")
+                print(f"  Stats: {packet_count} logged, {error_count} errors")
+                print("-" * 60)
 
-            time.sleep(0.05)
-    
-    except serial.SerialException as e:
-        print(f"\n[ERROR] Could not open serial port {args.serial_port}")
-        print(f"Details: {e}")
-        print("Tip: Check Device Manager for the correct COM port")
-        sys.exit(1)
-    
-    except KeyboardInterrupt:
-        print("\n\nShutting down data receiver...")
-        print(f"Final stats: {packet_count} packets logged, {error_count} errors")
-        ser.close()
-        sys.exit(0)
-    
-    except Exception as e:
-        print(f"\n[ERROR] Unexpected error: {e}")
-        sys.exit(1)
+        time.sleep(0.05)
 
 
 if __name__ == "__main__":

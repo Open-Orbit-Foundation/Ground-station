@@ -8,7 +8,7 @@ import os
 import math
 import urllib.request
 import urllib.error
-import pygame
+import time
 
 
 class MapTileCache:
@@ -37,7 +37,7 @@ class MapTileCache:
         return os.path.join(tile_dir, f"{y}.png")
     
     def download_tile(self, zoom, x, y):
-        """Download a single tile from OSM"""
+        """Download a single tile from OSM (no retries; fail on error)."""
         url = f"{self.tile_server}/{zoom}/{x}/{y}.png"
         tile_path = self.get_tile_path(zoom, x, y)
         
@@ -45,23 +45,18 @@ class MapTileCache:
         if os.path.exists(tile_path):
             return tile_path
         
-        try:
-            # Download with user agent (required by OSM)
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': 'GroundStationControl/1.0'}
-            )
-            
-            with urllib.request.urlopen(req, timeout=10) as response:
-                with open(tile_path, 'wb') as f:
-                    f.write(response.read())
-            
-            print(f"Downloaded tile: {zoom}/{x}/{y}")
-            return tile_path
-        
-        except urllib.error.URLError as e:
-            print(f"Error downloading tile {zoom}/{x}/{y}: {e}")
-            return None
+        # Polite throttling
+        time.sleep(0.25)
+        # Download with user agent (required by OSM)
+        req = urllib.request.Request(
+            url,
+            headers={'User-Agent': 'GroundStationControl/1.0'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            with open(tile_path, 'wb') as f:
+                f.write(response.read())
+        print(f"Downloaded tile: {zoom}/{x}/{y}")
+        return tile_path
     
     
     
@@ -97,9 +92,13 @@ class MapRenderer:
     def __init__(self, cache_dir='map_cache'):
         self.cache = MapTileCache(cache_dir)
         self.tile_size = 256
+        self._image_cache = {}
+        self._image_cache_max = 512  # simple bound to avoid runaway memory
     
     def render_map(self, surface, center_lat, center_lon, zoom, display_rect, colors):
         """Render map tiles centered on lat/lon"""
+        # Lazy import to avoid requiring pygame for CLI preloaders
+        import pygame
         x, y, width, height = display_rect
         
         # Calculate which tiles we need
@@ -125,20 +124,16 @@ class MapRenderer:
                 tile_path = self.cache.get_tile_path(zoom, tile_x, tile_y)
                 
                 if os.path.exists(tile_path):
-                    try:
-                        # Load and display tile
-                        tile_img = pygame.image.load(tile_path)
-                        
-                        # Calculate screen position
-                        screen_x = x + tile_x_offset * self.tile_size
-                        screen_y = y + tile_y_offset * self.tile_size
-                        
-                        # Clip to display area
-                        if screen_x < x + width and screen_y < y + height:
-                            surface.blit(tile_img, (screen_x, screen_y))
+                    # Load and display tile (with simple in-memory cache)
+                    tile_img = self._get_tile_image(tile_path)
                     
-                    except Exception as e:
-                        print(f"Error loading tile {tile_x}/{tile_y}: {e}")
+                    # Calculate screen position
+                    screen_x = x + tile_x_offset * self.tile_size
+                    screen_y = y + tile_y_offset * self.tile_size
+                    
+                    # Clip to display area
+                    if screen_x < x + width and screen_y < y + height:
+                        surface.blit(tile_img, (screen_x, screen_y))
         
         # Draw center marker (current position)
         center_x = x + width // 2
@@ -153,6 +148,45 @@ class MapRenderer:
                         (center_x, center_y - marker_size), 
                         (center_x, center_y + marker_size), 3)
         pygame.draw.circle(surface, colors['primary'], (center_x, center_y), 5, 2)
+
+    def _get_tile_image(self, path):
+        """Get tile image surface from cache; load if missing or stale."""
+        # Lazy import inside method
+        import pygame
+        mtime = os.path.getmtime(path)
+
+        cached = self._image_cache.get(path)
+        if cached and cached.get('mtime') == mtime:
+            return cached['surf']
+
+        # Load fresh
+        surf = pygame.image.load(path)
+        # Update cache (simple dict with bound size)
+        if len(self._image_cache) >= self._image_cache_max:
+            # Drop an arbitrary item (simple pop of first key)
+            self._image_cache.pop(next(iter(self._image_cache)))
+        self._image_cache[path] = {'surf': surf, 'mtime': mtime}
+        return surf
+
+
+def tiles_exist_for_area(center_lat, center_lon, zoom, display_rect, cache_dir='map_cache'):
+    """Return True if all tiles required to render display_rect are cached locally."""
+    x, y, width, height = display_rect
+    cache = MapTileCache(cache_dir)
+    tile_size = 256
+    center_tx, center_ty = cache.lat_lon_to_tile(center_lat, center_lon, zoom)
+    tiles_x = math.ceil(width / tile_size) + 1
+    tiles_y = math.ceil(height / tile_size) + 1
+    start_tx = center_tx - tiles_x // 2
+    start_ty = center_ty - tiles_y // 2
+    for dx in range(tiles_x):
+        for dy in range(tiles_y):
+            tx = start_tx + dx
+            ty = start_ty + dy
+            tile_path = cache.get_tile_path(zoom, tx, ty)
+            if not os.path.exists(tile_path):
+                return False
+    return True
 
 
 def preload_flight_area(center_lat, center_lon, max_radius_km=50, zoom_levels=[10, 11, 12]):

@@ -18,12 +18,24 @@ class CUSFPredictor:
         self.api_url = 'https://predict.cusf.co.uk/api/v1/'
         self.cache_file = cache_file
         self.cached_prediction = None
+        self.cache_loaded_at = None
         
         # Load cached prediction if exists
         if os.path.exists(cache_file):
             self.load_cache()
+
+    def _cache_is_fresh(self, ttl_hours: float = 3.0) -> bool:
+        """Return True if a cached prediction exists and is within TTL."""
+        if not self.cached_prediction:
+            return False
+        ts = self.cached_prediction.get('download_time')
+        if not ts:
+            return False
+        t = datetime.fromisoformat(ts.replace('Z', '+00:00')) if 'T' in ts else datetime.fromisoformat(ts)
+        age = datetime.now(t.tzinfo) - t if t.tzinfo else datetime.now() - t
+        return age <= timedelta(hours=max(ttl_hours, 0))
     
-    def download_prediction(self, config):
+    def download_prediction(self, config, use_cache_on_fail: bool = True, ttl_hours: float = 3.0):
         """
         Download trajectory prediction from CUSF API
         
@@ -59,32 +71,18 @@ class CUSFPredictor:
         print(f"Launch: {params['launch_latitude']:.4f}, {params['launch_longitude']:.4f}")
         print(f"Time: {params['launch_datetime']}")
         
-        try:
-            response = requests.get(self.api_url, params=params, timeout=30)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            # Add metadata
-            data['config'] = config
-            data['download_time'] = datetime.now().isoformat()
-            
-            # Cache the prediction
-            self.cached_prediction = data
-            self.save_cache()
-            
-            print(f"✓ Prediction downloaded successfully")
-            print(f"✓ Landing: {data['landing_location']['latitude']:.4f}, "
-                  f"{data['landing_location']['longitude']:.4f}")
-            
-            return data
-        
-        except requests.exceptions.RequestException as e:
-            print(f"✗ Error downloading prediction: {e}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"✗ Error parsing prediction: {e}")
-            return None
+        response = requests.get(self.api_url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        # Add metadata
+        data['config'] = config
+        data['download_time'] = datetime.now().isoformat()
+        # Cache the prediction
+        self.cached_prediction = data
+        self.save_cache()
+        print(f"✓ Prediction downloaded successfully")
+        print(f"✓ Landing: {data['landing_location']['latitude']:.4f}, {data['landing_location']['longitude']:.4f}")
+        return data
     
     def save_cache(self):
         """Save prediction to cache file"""
@@ -95,14 +93,11 @@ class CUSFPredictor:
     
     def load_cache(self):
         """Load prediction from cache file"""
-        try:
-            with open(self.cache_file, 'r') as f:
-                self.cached_prediction = json.load(f)
-            print(f"✓ Loaded cached prediction from {self.cache_file}")
-            return True
-        except Exception as e:
-            print(f"✗ Error loading cache: {e}")
-            return False
+        with open(self.cache_file, 'r') as f:
+            self.cached_prediction = json.load(f)
+        self.cache_loaded_at = datetime.now().isoformat()
+        print(f"✓ Loaded cached prediction from {self.cache_file}")
+        return True
     
     def get_trajectory(self):
         """
@@ -117,37 +112,28 @@ class CUSFPredictor:
         trajectory = []
         
         # Parse prediction path
-        try:
-            for stage in ['ascent', 'descent']:
-                if stage in self.cached_prediction['prediction']:
-                    for point in self.cached_prediction['prediction'][stage]:
-                        trajectory.append((
-                            point['latitude'],
-                            point['longitude'],
-                            point['altitude'],
-                            point.get('time', 0)
-                        ))
-            
-            return trajectory
-        
-        except (KeyError, TypeError) as e:
-            print(f"Error parsing trajectory: {e}")
-            return []
+        for stage in ['ascent', 'descent']:
+            if stage in self.cached_prediction['prediction']:
+                for point in self.cached_prediction['prediction'][stage]:
+                    trajectory.append((
+                        point['latitude'],
+                        point['longitude'],
+                        point['altitude'],
+                        point.get('time', 0)
+                    ))
+        return trajectory
     
     def get_landing_location(self):
         """Get predicted landing location"""
         if not self.cached_prediction:
             return None
         
-        try:
-            landing = self.cached_prediction['landing_location']
-            return (
-                landing['latitude'],
-                landing['longitude'],
-                0  # Landing altitude
-            )
-        except (KeyError, TypeError):
-            return None
+        landing = self.cached_prediction['landing_location']
+        return (
+            landing['latitude'],
+            landing['longitude'],
+            0  # Landing altitude
+        )
     
     def get_position_at_time(self, elapsed_seconds):
         """
